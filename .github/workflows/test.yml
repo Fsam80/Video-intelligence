@@ -7,10 +7,10 @@ on:
     inputs:
       tiktok_url:
         description: "Lien TikTok à tester"
-        default: "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+        default: "https://www.tiktok.com/@madameb0nplan/video/7701395886072433953"
       llm_model:
         description: "Modèle Ollama"
-        default: "qwen2.5:1.5b-instruct"
+        default: "qwen2.5:7b-instruct"
       whisper_model:
         description: "Modèle Whisper"
         default: "small"
@@ -31,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      LLM_MODEL: ${{ inputs.llm_model || 'qwen2.5:1.5b-instruct' }}
+      LLM_MODEL: ${{ inputs.llm_model || 'qwen2.5:7b-instruct' }}
       WHISPER_MODEL: ${{ inputs.whisper_model || 'small' }}
-      TIKTOK_URL: ${{ inputs.tiktok_url || 'https://www.tiktok.com/@scout2015/video/6718335390845095173' }}
+      TIKTOK_URL: ${{ inputs.tiktok_url || 'https://www.tiktok.com/@madameb0nplan/video/7701395886072433953' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
