@@ -93,3 +93,14 @@ def test_parse_json_variants():
     assert parse_json('Voici :\n```json\n{"a": 1}\n```') == {"a": 1}
     with pytest.raises(AnalysisError):
         parse_json("pas de json")
+
+
+def test_video_without_speech_is_done_not_error(client, monkeypatch):
+    from app import pipeline
+
+    monkeypatch.setattr(pipeline, "transcribe", lambda p: ([], "en"))
+    r = client.post("/v1/jobs/upload", files={"file": ("chien.mp4", b"x", "video/mp4")})
+    job = wait_done(client, r.json()["id"])
+    assert job["status"] == "done"
+    assert "Aucune parole" in job["error"]
+    assert job["has_analysis"] is False
