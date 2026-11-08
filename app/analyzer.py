@@ -55,6 +55,8 @@ def _chat(system: str, user: str) -> str:
     payload = {
         "model": settings.llm_model,
         "temperature": 0.2,
+        # Force a JSON object (supported by Ollama, OpenAI and most compatible servers).
+        "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
@@ -65,6 +67,13 @@ def _chat(system: str, user: str) -> str:
             f"LLM injoignable à {settings.llm_base_url} ({exc.__class__.__name__}). "
             "Vérifie que le serveur local (ex. Ollama) est lancé."
         ) from exc
+    if resp.status_code == 400 and "response_format" in resp.text:
+        # Some compatible servers reject the JSON mode: retry without it.
+        payload.pop("response_format", None)
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=settings.llm_timeout_s)
+        except httpx.HTTPError as exc:
+            raise AnalysisError(f"LLM injoignable ({exc.__class__.__name__}).") from exc
     if resp.status_code != 200:
         raise AnalysisError(f"Erreur LLM {resp.status_code} : {resp.text[:300]}")
     try:
@@ -79,10 +88,16 @@ def parse_json(text: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise AnalysisError("Le LLM n'a pas renvoyé de JSON.")
+    raw = text[start : end + 1]
     try:
-        data = json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise AnalysisError(f"JSON invalide renvoyé par le LLM : {exc}") from exc
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError:
+        # Common model mistake: stray backslashes (e.g. "\'" or transliterations).
+        repaired = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", raw)
+        try:
+            data = json.loads(repaired, strict=False)
+        except json.JSONDecodeError as exc:
+            raise AnalysisError(f"JSON invalide renvoyé par le LLM : {exc}") from exc
     if not isinstance(data, dict):
         raise AnalysisError("Le LLM n'a pas renvoyé un objet JSON.")
     return data
@@ -123,8 +138,13 @@ def analyze_transcript(transcript: str, title: str | None = None) -> dict:
     truncated = len(transcript) > settings.llm_max_transcript_chars
     body = transcript[: settings.llm_max_transcript_chars]
     user = (f"Titre : {title}\n\n" if title else "") + f"Transcription :\n{body}"
-    raw = _chat(SYSTEM_PROMPT.format(lang=settings.analysis_language), user)
-    result = _normalise(parse_json(raw))
+    system = SYSTEM_PROMPT.format(lang=settings.analysis_language)
+    try:
+        result = _normalise(parse_json(_chat(system, user)))
+    except AnalysisError as first:
+        if "JSON" not in str(first):
+            raise
+        result = _normalise(parse_json(_chat(system, user)))  # one retry on malformed output
     result["truncated_input"] = truncated
     return result
 
