@@ -1,0 +1,87 @@
+name: Évaluation v0.2
+
+on:
+  push:
+    branches: [v0.2-mvp]
+    paths: ["eval/**", ".github/workflows/eval.yml"]
+  workflow_dispatch:
+
+env:
+  OLLAMA_MAX_LOADED_MODELS: "1"
+
+jobs:
+  robustesse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      LLM_MODEL: qwen2.5:7b-instruct
+      WHISPER_MODEL: small
+      LLM_MAX_TRANSCRIPT_CHARS: "60000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: pip install -r requirements.txt
+      - name: Ollama + Qwen 2.5 7B
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
+          sleep 5
+          ollama pull qwen2.5:7b-instruct
+      - name: Démarrage de l'application
+        run: |
+          cp .env.example .env
+          nohup bash scripts/start.sh > app.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && break; sleep 2; done
+      - name: Étape 1 — trois vidéos
+        run: python eval/robustness.py
+      - name: Comparaison de transcription (small vs large-v3-turbo)
+        continue-on-error: true
+        run: PYTHONPATH=. python eval/whisper_compare.py
+      - name: Journaux
+        if: always()
+        run: tail -n 80 app.log data/fetcher.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: robustesse
+          path: |
+            eval/out/*.json
+            eval/out/*.txt
+
+  modeles:
+    needs: robustesse
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      EXTERNAL_LLM_API_KEY: ${{ secrets.EXTERNAL_LLM_API_KEY }}
+      EXTERNAL_LLM_BASE_URL: ${{ vars.EXTERNAL_LLM_BASE_URL }}
+      EXTERNAL_LLM_MODEL: ${{ vars.EXTERNAL_LLM_MODEL }}
+      LLM_MAX_TRANSCRIPT_CHARS: "60000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: { name: robustesse, path: eval/out }
+      - name: Ollama + Qwen 7B et 14B
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
+          sleep 5
+          ollama pull qwen2.5:7b-instruct
+          ollama pull qwen2.5:14b-instruct
+          df -h / ; free -g
+      - name: Étape 2 — comparaison sur la transcription darija
+        if: hashFiles('eval/out/darija_algerienne.txt') != ''
+        run: PYTHONPATH=. python eval/model_compare.py eval/out/darija_algerienne.txt
+      - name: Étape 2 — comparaison sur la transcription longue
+        if: hashFiles('eval/out/longue_plus_5_min.txt') != ''
+        run: PYTHONPATH=. python eval/model_compare.py eval/out/longue_plus_5_min.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: modeles
+          path: eval/out/models_*.json

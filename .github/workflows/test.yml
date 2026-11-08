@@ -3,6 +3,7 @@ name: Tests v0.2
 on:
   push:
     branches: [v0.2-mvp]
+    paths-ignore: ["eval/**", ".github/workflows/eval.yml"]
   workflow_dispatch:
     inputs:
       tiktok_url:
