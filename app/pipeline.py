@@ -80,6 +80,13 @@ def run_analysis(job_id: str) -> None:
     transcript = db.get_transcript(job_id)
     if job is None or transcript is None:
         return
+    if not transcript["text"].strip():
+        db.update_job(
+            job_id,
+            status="done",
+            error="Aucune parole détectée dans cette vidéo : rien à analyser.",
+        )
+        return
     db.update_job(job_id, status="analyzing", error=None)
     try:
         result = analyze_transcript(transcript["text"], job.get("title"))
