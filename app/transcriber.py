@@ -72,11 +72,28 @@ def _get_model():
     return _model
 
 
+def load_wav(audio_path: Path):
+    """Read the 16 kHz mono 16-bit WAV produced by extract_audio as float32.
+
+    Passing an array to faster-whisper avoids its PyAV decoder, which breaks
+    with recent PyAV releases ("unexpected keyword argument 'metadata_errors'").
+    """
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(audio_path), "rb") as wf:
+        if wf.getnchannels() != 1 or wf.getframerate() != 16000 or wf.getsampwidth() != 2:
+            raise TranscriptionError("Format audio interne inattendu (16 kHz mono 16 bits requis).")
+        frames = wf.readframes(wf.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 def transcribe(audio_path: Path) -> tuple[list[dict], str | None]:
     """Return (segments, detected_language). Each segment: start, end, text."""
     model = _get_model()
     segments, info = model.transcribe(
-        str(audio_path),
+        load_wav(audio_path),
         language=settings.whisper_language,
         vad_filter=True,
     )
