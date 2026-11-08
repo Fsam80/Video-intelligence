@@ -118,3 +118,8 @@ def test_normalise_flattens_objects_and_lists():
     assert out["critical_analysis"] == "Point 1. Point 2."
     assert out["key_ideas"] == ["idée unique"]
     assert out["facts"] == []
+
+
+def test_parse_json_repairs_stray_backslashes():
+    raw = r'{"a": "l\'idée", "b": "ok\n"}'
+    assert parse_json(raw) == {"a": "l\\'idée", "b": "ok\n"}
