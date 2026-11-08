@@ -1,1 +1,206 @@
-placeholder
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Intelligence</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#5f6b7a; --line:#e2e6eb;
+          --accent:#2457d6; --ok:#1f8a4c; --err:#c0392b; --warn:#b7791f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --card:#1a1e24; --ink:#e8ecf1; --muted:#9aa5b1; --line:#2a3038;
+            --accent:#6d93ff; --ok:#3fbf7a; --err:#ff6b5b; --warn:#e0a84a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns: 340px 1fr; gap:16px; padding:16px; max-width:1300px; margin:auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  input[type=text], input[type=search] { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+  button { padding:8px 12px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center; }
+  .muted { color:var(--muted); font-size:13px; }
+  .msg { font-size:13px; margin-top:6px; min-height:1em; }
+  .msg.err { color:var(--err); }
+  ul.lib { list-style:none; margin:0; padding:0; }
+  ul.lib li { padding:8px; border-radius:8px; cursor:pointer; display:flex; gap:8px; align-items:flex-start; }
+  ul.lib li:hover, ul.lib li.sel { background:var(--bg); }
+  ul.lib .t { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:20px; border:1px solid currentColor; white-space:nowrap; }
+  .s-done { color:var(--ok); } .s-error { color:var(--err); } .s-other { color:var(--warn); }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:10px 0; flex-wrap:wrap; }
+  .tabs button { background:none; color:var(--muted); border-radius:0; border-bottom:2px solid transparent; }
+  .tabs button.on { color:var(--ink); border-bottom-color:var(--accent); }
+  .seg { display:flex; gap:10px; padding:3px 0; } .seg .ts { color:var(--muted); font-variant-numeric:tabular-nums; min-width:62px; }
+  h3 { font-size:14px; margin:14px 0 4px; }
+  mark { background:#ffe58a; color:#000; }
+  .err-box { color:var(--err); white-space:pre-wrap; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Video Intelligence</h1>
+  <p>Colle un lien TikTok ou YouTube, ou importe un fichier : transcription, résumé, faits vs opinions, analyse critique.</p>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <h2>Nouvelle vidéo</h2>
+      <input id="url" type="text" placeholder="https://www.tiktok.com/@…/video/…">
+      <div class="row"><button id="btnUrl">Analyser le lien</button></div>
+      <div class="row">
+        <input id="file" type="file" accept="video/*,audio/*">
+        <button id="btnFile" class="ghost">Importer</button>
+      </div>
+      <div id="submitMsg" class="msg"></div>
+    </div>
+    <div class="card">
+      <h2>Recherche dans la bibliothèque</h2>
+      <input id="q" type="search" placeholder="mot-clé…">
+      <div id="hits" class="muted"></div>
+    </div>
+    <div class="card">
+      <h2>Bibliothèque</h2>
+      <div class="row muted" style="margin:0 0 6px">Coche 2 à 5 vidéos analysées pour les comparer.
+        <button id="btnCompare" class="ghost" disabled>Comparer</button></div>
+      <ul id="lib" class="lib"></ul>
+    </div>
+  </section>
+  <section>
+    <div class="card" id="detail"><p class="muted">Sélectionne une vidéo.</p></div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const LABEL = {queued:"en attente", fetching:"récupération", transcribing:"transcription", analyzing:"analyse", done:"terminé", error:"erreur"};
+let selected = null, tab = "analysis", jobsCache = [], checked = new Set();
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let d = r.statusText; try { d = (await r.json()).detail || d; } catch {}
+    throw new Error(typeof d === "string" ? d : JSON.stringify(d));
+  }
+  return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
+}
+const fmt = (s) => { s = Math.floor(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return (h ? h + ":" : "") + String(m).padStart(2,"0") + ":" + String(x).padStart(2,"0"); };
+const badge = (st) => `<span class="badge ${st==="done"?"s-done":st==="error"?"s-error":"s-other"}">${LABEL[st]||st}</span>`;
+
+async function submitUrl() {
+  const url = $("#url").value.trim(); if (!url) return;
+  $("#submitMsg").className = "msg"; $("#submitMsg").textContent = "Envoi…";
+  try {
+    const j = await api("/v1/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({url})});
+    $("#url").value = ""; $("#submitMsg").textContent = "Ajouté."; selected = j.id; refresh();
+  } catch (e) { $("#submitMsg").className = "msg err"; $("#submitMsg").textContent = e.message; }
+}
+async function submitFile() {
+  const f = $("#file").files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  $("#submitMsg").className = "msg"; $("#submitMsg").textContent = "Envoi du fichier…";
+  try {
+    const j = await api("/v1/jobs/upload", {method:"POST", body: fd});
+    $("#file").value = ""; $("#submitMsg").textContent = "Ajouté."; selected = j.id; refresh();
+  } catch (e) { $("#submitMsg").className = "msg err"; $("#submitMsg").textContent = e.message; }
+}
+
+async function refresh() {
+  try { jobsCache = await api("/v1/jobs"); } catch { return; }
+  $("#lib").innerHTML = jobsCache.length ? jobsCache.map(j => `
+    <li data-id="${j.id}" class="${j.id===selected?"sel":""}">
+      <input type="checkbox" data-chk="${j.id}" ${checked.has(j.id)?"checked":""} ${j.has_analysis?"":"disabled"}>
+      <span class="t">${esc(j.title || j.source)}<br><span class="muted">${esc(j.platform||"")}</span></span>
+      ${badge(j.status)}</li>`).join("") : '<li class="muted">Aucune vidéo pour l\'instant.</li>';
+  if (selected) renderDetail();
+}
+
+async function renderDetail() {
+  const j = jobsCache.find(x => x.id === selected); if (!j) return;
+  const busy = !["done","error"].includes(j.status);
+  let html = `<h2>${esc(j.title || j.source)}</h2>
+    <div class="muted">${esc(j.platform)} · ${j.author?esc(j.author)+" · ":""}${j.duration_s?fmt(j.duration_s)+" · ":""}${badge(j.status)}</div>
+    <div class="muted" style="overflow-wrap:anywhere">${j.source_type==="url"?`<a href="${esc(j.source)}" target="_blank" rel="noopener">${esc(j.source)}</a>`:""}</div>`;
+  if (j.error) html += `<p class="err-box">${esc(j.error)}</p>`;
+  if (busy) html += `<p class="muted">Traitement en cours (${LABEL[j.status]})… la page se met à jour seule.</p>`;
+  html += `<div class="row">
+    <a href="/v1/jobs/${j.id}/export"><button class="ghost">Exporter (.md)</button></a>
+    <button class="ghost" id="btnRe" ${busy?"disabled":""}>Ré-analyser</button>
+    <button class="ghost" id="btnDel" ${busy?"disabled":""}>Supprimer</button></div>
+    <div class="tabs"><button data-tab="analysis" class="${tab==="analysis"?"on":""}">Analyse</button>
+    <button data-tab="transcript" class="${tab==="transcript"?"on":""}">Transcription</button></div><div id="tabBody" class="muted">…</div>`;
+  $("#detail").innerHTML = html;
+  $("#btnRe")?.addEventListener("click", async () => { try { await api(`/v1/jobs/${j.id}/analyze`, {method:"POST"}); refresh(); } catch(e){ alert(e.message);} });
+  $("#btnDel")?.addEventListener("click", async () => { if (!confirm("Supprimer cette vidéo de la bibliothèque ?")) return;
+    await api(`/v1/jobs/${j.id}`, {method:"DELETE"}); selected = null; $("#detail").innerHTML = '<p class="muted">Supprimée.</p>'; refresh(); });
+  document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; renderDetail(); }));
+  const body = $("#tabBody");
+  try {
+    if (tab === "transcript") {
+      const t = await api(`/v1/jobs/${j.id}/transcript`);
+      body.className = ""; body.innerHTML = `<div class="muted">Langue : ${esc(t.language||"?")}</div>` +
+        t.segments.map(s => `<div class="seg" id="seg-${Math.floor(s.start)}"><span class="ts">${fmt(s.start)}</span><span>${esc(s.text)}</span></div>`).join("");
+    } else {
+      const a = await api(`/v1/jobs/${j.id}/analysis`);
+      const list = (k) => (a[k]||[]).length ? "<ul>" + a[k].map(x => `<li>${esc(x)}</li>`).join("") + "</ul>" : '<p class="muted">(aucun)</p>';
+      body.className = ""; body.innerHTML = `
+        <h3>Résumé</h3><p>${esc(a.summary)}</p>
+        <h3>Idées clés</h3>${list("key_ideas")}
+        <h3>Faits</h3>${list("facts")}
+        <h3>Opinions</h3>${list("opinions")}
+        <h3>À vérifier</h3>${list("claims_to_verify")}
+        <h3>Personnes et entités</h3>${list("people_and_entities")}
+        <h3>Analyse critique</h3><p>${esc(a.critical_analysis)}</p>
+        <p class="muted">Thèmes : ${esc((a.topics||[]).join(", "))} · Modèle : ${esc(a.model)}${a.truncated_input?" · transcription tronquée pour l'analyse":""}</p>`;
+    }
+  } catch (e) { body.textContent = e.message; }
+}
+
+async function doSearch() {
+  const q = $("#q").value.trim(); if (q.length < 2) { $("#hits").innerHTML = ""; return; }
+  try {
+    const hits = await api(`/v1/search?q=${encodeURIComponent(q)}`);
+    $("#hits").innerHTML = hits.length ? hits.map(h => `<div class="seg" style="cursor:pointer" data-hit="${h.job_id}">
+      <span class="ts">${fmt(h.start)}</span><span><b>${esc(h.title)}</b><br>${esc(h.snippet).replace(/\[/g,"<mark>").replace(/\]/g,"</mark>")}</span></div>`).join("")
+      : "Aucun résultat.";
+    document.querySelectorAll("[data-hit]").forEach(el => el.addEventListener("click", () => { selected = el.dataset.hit; tab = "transcript"; refresh(); }));
+  } catch (e) { $("#hits").textContent = e.message; }
+}
+
+async function doCompare() {
+  const ids = [...checked];
+  $("#detail").innerHTML = `<h2>Comparaison de ${ids.length} vidéos</h2><p class="muted">Analyse en cours par le LLM…</p>`;
+  try {
+    const c = await api("/v1/compare", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({job_ids: ids})});
+    const list = (v) => Array.isArray(v) ? (v.length ? "<ul>" + v.map(x => `<li>${esc(typeof x==="string"?x:JSON.stringify(x))}</li>`).join("") + "</ul>" : '<p class="muted">(aucun)</p>') : `<p>${esc(v)}</p>`;
+    $("#detail").innerHTML = `<h2>Comparaison de ${ids.length} vidéos</h2>
+      <h3>Points communs</h3>${list(c.common_points)}<h3>Divergences</h3>${list(c.differences)}
+      <h3>Contradictions</h3>${list(c.contradictions)}<h3>La mieux étayée</h3>${list(c.most_reliable)}
+      <h3>Synthèse</h3>${list(c.synthesis)}`;
+  } catch (e) { $("#detail").innerHTML += `<p class="err-box">${esc(e.message)}</p>`; }
+}
+
+$("#btnUrl").addEventListener("click", submitUrl);
+$("#url").addEventListener("keydown", e => { if (e.key === "Enter") submitUrl(); });
+$("#btnFile").addEventListener("click", submitFile);
+$("#btnCompare").addEventListener("click", doCompare);
+let st; $("#q").addEventListener("input", () => { clearTimeout(st); st = setTimeout(doSearch, 300); });
+$("#lib").addEventListener("click", (e) => {
+  const chk = e.target.closest("[data-chk]");
+  if (chk) { chk.checked ? checked.add(chk.dataset.chk) : checked.delete(chk.dataset.chk);
+    $("#btnCompare").disabled = checked.size < 2 || checked.size > 5; return; }
+  const li = e.target.closest("li[data-id]"); if (li) { selected = li.dataset.id; tab = "analysis"; refresh(); }
+});
+refresh();
+setInterval(() => { if (jobsCache.some(j => !["done","error"].includes(j.status))) refresh(); }, 3000);
+</script>
+</body>
+</html>
