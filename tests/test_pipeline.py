@@ -104,3 +104,17 @@ def test_video_without_speech_is_done_not_error(client, monkeypatch):
     assert job["status"] == "done"
     assert "Aucune parole" in job["error"]
     assert job["has_analysis"] is False
+
+
+def test_normalise_flattens_objects_and_lists():
+    from app.analyzer import _normalise
+
+    out = _normalise({
+        "claims_to_verify": [{"claim": "X existe", "reason": "non sourcé"}],
+        "critical_analysis": ["Point 1.", "Point 2."],
+        "key_ideas": "idée unique",
+    })
+    assert out["claims_to_verify"] == ["X existe — non sourcé"]
+    assert out["critical_analysis"] == "Point 1. Point 2."
+    assert out["key_ideas"] == ["idée unique"]
+    assert out["facts"] == []
