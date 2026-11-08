@@ -26,7 +26,7 @@ jobs:
       - name: Ollama + Qwen 2.5 7B
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          (OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
+          (OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
           sleep 5
           ollama pull qwen2.5:7b-instruct
       - name: Démarrage de l'application
@@ -53,7 +53,7 @@ jobs:
   modeles:
     needs: robustesse
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       EXTERNAL_LLM_API_KEY: ${{ secrets.EXTERNAL_LLM_API_KEY }}
       EXTERNAL_LLM_BASE_URL: ${{ vars.EXTERNAL_LLM_BASE_URL }}
@@ -69,14 +69,17 @@ jobs:
       - name: Ollama + Qwen 7B et 14B
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          (OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
+          (OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_MAX_LOADED_MODELS=1 ollama serve > ollama.log 2>&1 &)
           sleep 5
           ollama pull qwen2.5:7b-instruct
           ollama pull qwen2.5:14b-instruct
           df -h / ; free -g
-      - name: Étape 2 — comparaison sur la transcription darija
-        if: hashFiles('eval/out/darija_algerienne.txt') != ''
-        run: PYTHONPATH=. python eval/model_compare.py eval/out/darija_algerienne.txt
+      - name: Étape 2 — comparaison sur la transcription arabe classique (large-v3-turbo)
+        if: hashFiles('eval/out/arabe_classique.turbo.txt') != ''
+        run: PYTHONPATH=. python eval/model_compare.py eval/out/arabe_classique.turbo.txt
+      - name: Étape 2 — comparaison sur la transcription darija (large-v3-turbo)
+        if: hashFiles('eval/out/darija_algerienne.turbo.txt') != ''
+        run: PYTHONPATH=. python eval/model_compare.py eval/out/darija_algerienne.turbo.txt
       - name: Étape 2 — comparaison sur la transcription longue
         if: hashFiles('eval/out/longue_plus_5_min.txt') != ''
         run: PYTHONPATH=. python eval/model_compare.py eval/out/longue_plus_5_min.txt

@@ -45,7 +45,7 @@ jobs:
       - name: LLM local (Ollama)
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          (ollama serve > ollama.log 2>&1 &)
+          (OLLAMA_CONTEXT_LENGTH=16384 ollama serve > ollama.log 2>&1 &)
           sleep 5
           ollama pull "$LLM_MODEL"
       - name: Démarrage de l'application
