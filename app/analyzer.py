@@ -33,6 +33,12 @@ Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, en {lang}, avec
 - "people_and_entities": personnes, organisations, marques, lieux cités ;
 - "critical_analysis": évaluation critique (biais, sophismes, angles morts, qualité des preuves) ;
 - "topics": 3 à 8 mots-clés thématiques.
+Règles :
+- chaque élément de liste est une phrase simple (chaîne de caractères), jamais un objet ;
+- "critical_analysis" est un paragraphe de texte, pas une liste ;
+- les avertissements de l'auteur (« fictif », « humour », « ce n'est pas un conseil »…) ne sont pas des faits :
+  évalue s'ils servent de précaution rhétorique ;
+- cite dans "people_and_entities" tous les noms propres entendus (personnes, outils, marques, plateformes).
 N'invente rien qui ne soit pas dans la transcription. Si une liste est vide, renvoie []."""
 
 COMPARE_PROMPT = """Tu compares plusieurs vidéos à partir de leurs analyses.
@@ -82,18 +88,32 @@ def parse_json(text: str) -> dict:
     return data
 
 
+def _to_text(v) -> str:
+    """Flatten whatever the model returned into readable text."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, dict):
+        vals = [_to_text(x) for x in v.values() if _to_text(x)]
+        return " — ".join(vals)
+    if isinstance(v, list):
+        return " ".join(_to_text(x) for x in v if _to_text(x))
+    return str(v)
+
+
 def _normalise(data: dict) -> dict:
     out: dict = {}
     for key in ANALYSIS_KEYS:
         val = data.get(key)
         if key in ("summary", "critical_analysis"):
-            out[key] = val if isinstance(val, str) else (json.dumps(val, ensure_ascii=False) if val else "")
+            out[key] = _to_text(val)
         else:
             if val is None:
                 val = []
             if not isinstance(val, list):
                 val = [val]
-            out[key] = [v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for v in val]
+            out[key] = [t for t in (_to_text(v) for v in val) if t]
     return out
 
 
