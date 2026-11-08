@@ -61,6 +61,7 @@ jobs:
           ffmpeg -y -loglevel error -i speech.wav speech.mp4
           python scripts/e2e_check.py file speech.mp4
       - name: Pipeline complet — lien TikTok
+        if: always()
         continue-on-error: true
         run: python scripts/e2e_check.py url "$TIKTOK_URL"
       - name: Journaux
