@@ -24,13 +24,17 @@ def main() -> None:
     media.mkdir(exist_ok=True)
     audios = {}
     for cat in ("arabe_classique", "darija_algerienne"):
-        url = rob.get(cat, {}).get("url")
-        if not url:
+        res = rob.get(cat, {}).get("resultat")
+        if not res:
             continue
-        with yt_dlp.YoutubeDL({"quiet": True, "format": "bestaudio/best",
-                               "outtmpl": str(media / f"{cat}.%(ext)s")}) as y:
-            y.extract_info(url, download=True)
-        f = next(media.glob(f"{cat}.*"))
+        url = res["candidat"]
+        if not url.startswith("upload:"):
+            with yt_dlp.YoutubeDL({"quiet": True, "format": "bestaudio/best",
+                                   "outtmpl": str(media / f"wc_{cat}.%(ext)s")}) as y:
+                y.extract_info(url, download=True)
+            f = next(media.glob(f"wc_{cat}.*"))
+        else:
+            f = next(media.glob(f"{cat}.*"))
         audios[cat] = load_wav(extract_audio(f))
     results = {}
     for m in MODELS:
@@ -43,6 +47,8 @@ def main() -> None:
                 "langue": info.language, "proba_langue": round(info.language_probability, 3),
                 "secondes": round(time.time() - t0, 1), "texte": text}
             print(cat, m, results[cat][m]["langue"], results[cat][m]["secondes"], flush=True)
+    for cat, by in results.items():
+        (OUT / f"{cat}.turbo.txt").write_text(by["large-v3-turbo"]["texte"], encoding="utf-8")
     (OUT / "whisper_compare.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     md = ["\n# Comparaison de transcription (même audio)\n"]
     for cat, by in results.items():

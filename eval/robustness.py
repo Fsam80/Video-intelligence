@@ -1,9 +1,10 @@
 """Étape 1 — robustesse : 3 vidéos (arabe classique, darija, > 5 min).
 
-Pour chaque catégorie : sonde les candidats (yt-dlp, sans téléchargement),
-retient le premier valide, le soumet à l'application (URL réelle) et mesure
-chaque étape. Écrit eval/out/robustness.json + transcriptions, et un résumé
-Markdown dans $GITHUB_STEP_SUMMARY.
+Pour chaque catégorie, essaie les candidats dans l'ordre : sonde la durée
+(yt-dlp, sans téléchargement), soumet le premier valide à l'application et
+passe au suivant si la récupération échoue ou si aucune parole n'est détectée.
+Un candidat « upload:<url> » est téléchargé puis importé comme fichier
+(repli quand les plateformes bloquent les serveurs de GitHub).
 """
 
 import json
@@ -16,31 +17,47 @@ import yt_dlp
 
 BASE = "http://127.0.0.1:8000"
 OUT = Path("eval/out")
-OUT.mkdir(parents=True, exist_ok=True)
+MEDIA = OUT / "media"
+MEDIA.mkdir(parents=True, exist_ok=True)
 RULES = {
-    "arabe_classique": (5, 900),
-    "darija_algerienne": (5, 900),
-    "longue_plus_5_min": (300, 1500),
+    "arabe_classique": (20, 900),
+    "darija_algerienne": (20, 900),
+    "longue_plus_5_min": (300, 1800),
 }
 
 
-def probe(url: str) -> dict | None:
+def probe(url: str) -> dict:
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as y:
             info = y.extract_info(url, download=False)
-        return {"duration": info.get("duration"), "title": (info.get("title") or "")[:120]}
+        return {"duration": info.get("duration")}
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)[:200]}
+        return {"error": str(exc).split(";")[0][:160]}
 
 
-def run_job(url: str) -> dict:
+def submit(c: httpx.Client, cand: str, cat: str) -> httpx.Response:
+    if cand.startswith("upload:"):
+        url = cand[len("upload:"):]
+        dest = MEDIA / f"{cat}{Path(url).suffix or '.mp3'}"
+        with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
+            r.raise_for_status()
+            with dest.open("wb") as fh:
+                for chunk in r.iter_bytes():
+                    fh.write(chunk)
+        with dest.open("rb") as fh:
+            return c.post("/v1/jobs/upload", files={"file": (dest.name, fh)})
+    return c.post("/v1/jobs", json={"url": cand})
+
+
+def run_job(cand: str, cat: str) -> dict:
     t0 = time.time()
     marks: dict[str, float] = {}
-    with httpx.Client(base_url=BASE, timeout=120) as c:
-        r = c.post("/v1/jobs", json={"url": url})
+    with httpx.Client(base_url=BASE, timeout=600) as c:
+        r = submit(c, cand, cat)
         if r.status_code != 202:
-            return {"submit_error": r.text}
+            return {"submit_error": r.text[:300]}
         jid = r.json()["id"]
+        marks["queued"] = 0.0
         last = None
         while time.time() - t0 < 3600:
             job = c.get(f"/v1/jobs/{jid}").json()
@@ -53,61 +70,77 @@ def run_job(url: str) -> dict:
         tr = c.get(f"/v1/jobs/{jid}/transcript")
         an = c.get(f"/v1/jobs/{jid}/analysis")
     total = round(time.time() - t0, 1)
-    t_fetch = marks.get("transcribing", total) - marks.get("fetching", 0)
-    t_trans = marks.get("analyzing", marks.get("done", marks.get("error", total))) - marks.get("transcribing", 0) if "transcribing" in marks else None
-    t_anal = (marks.get("done", total) - marks["analyzing"]) if "analyzing" in marks else None
+    end = marks.get("done", marks.get("error", total))
+    t_tr_start = marks.get("transcribing")
+    t_an_start = marks.get("analyzing")
     return {
         "job": job,
-        "timings_s": {"recuperation": round(t_fetch, 1), "transcription": t_trans and round(t_trans, 1),
-                      "analyse": t_anal and round(t_anal, 1), "total": total},
+        "timings_s": {
+            "recuperation_ou_import": round((t_tr_start or end) - marks.get("fetching", 0), 1),
+            "transcription": round((t_an_start or end) - t_tr_start, 1) if t_tr_start is not None else None,
+            "analyse": round(end - t_an_start, 1) if t_an_start is not None else None,
+            "total": total,
+        },
         "transcript": tr.json() if tr.status_code == 200 else None,
         "analysis": an.json() if an.status_code == 200 else None,
     }
 
 
+def usable(res: dict) -> bool:
+    t = res.get("transcript")
+    return bool(t and t["text"].strip())
+
+
 def main() -> None:
     videos = json.loads(Path("eval/videos.json").read_text())
     results = {}
-    for cat, urls in videos.items():
+    for cat, cands in videos.items():
         lo, hi = RULES[cat]
-        probes = []
+        attempts = []
         chosen = None
-        for u in urls:
-            p = probe(u)
-            probes.append({"url": u, **(p or {})})
-            d = (p or {}).get("duration")
-            if d and lo <= d <= hi:
-                chosen = u
+        for cand in cands:
+            if not cand.startswith("upload:"):
+                p = probe(cand)
+                d = p.get("duration")
+                if not d or not (lo <= d <= hi):
+                    attempts.append({"candidat": cand, "sonde": p, "retenu": False})
+                    continue
+            try:
+                res = run_job(cand, cat)
+            except Exception as exc:  # noqa: BLE001
+                res = {"submit_error": f"{exc.__class__.__name__}: {exc}"[:300]}
+            ok = usable(res) and (not cand.startswith("upload:") or (res["job"].get("duration_s") or 0) >= lo)
+            attempts.append({"candidat": cand, "statut": res.get("job", {}).get("status"),
+                             "erreur": res.get("job", {}).get("error") or res.get("submit_error"),
+                             "retenu": ok})
+            if ok:
+                chosen = {"candidat": cand, **res}
                 break
-        res = {"probes": probes, "url": chosen}
+        results[cat] = {"tentatives": attempts, "resultat": chosen}
         if chosen:
-            res.update(run_job(chosen))
-            if res.get("transcript"):
-                (OUT / f"{cat}.txt").write_text(res["transcript"]["text"], encoding="utf-8")
-        results[cat] = res
-        print(cat, json.dumps({k: v for k, v in res.items() if k not in ("transcript", "analysis")},
-                              ensure_ascii=False)[:1500], flush=True)
+            (OUT / f"{cat}.txt").write_text(chosen["transcript"]["text"], encoding="utf-8")
+            (OUT / f"{cat}.source").write_text(chosen["candidat"], encoding="utf-8")
+        print(cat, json.dumps(attempts, ensure_ascii=False)[:2000], flush=True)
     (OUT / "robustness.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = ["# Étape 1 — Robustesse\n"]
     for cat, r in results.items():
         md.append(f"## {cat}\n")
-        md.append("Candidats sondés : " + "; ".join(
-            f"{p['url']} → {p.get('duration') or p.get('error')}" for p in r["probes"]) + "\n")
-        if not r.get("url"):
-            md.append("**Aucun candidat valide.**\n")
+        md.append("Tentatives :\n" + "\n".join(f"- {json.dumps(a, ensure_ascii=False)}" for a in r["tentatives"]) + "\n")
+        ch = r["resultat"]
+        if not ch:
+            md.append("**Aucun candidat exploitable.**\n")
             continue
-        j = r.get("job", {})
-        md.append(f"- URL : {r['url']}\n- Titre : {j.get('title')}\n- Durée : {j.get('duration_s')} s"
-                  f"\n- Statut : {j.get('status')} — erreur : {j.get('error')}\n- Langue détectée : {j.get('language')}"
-                  f"\n- Temps (s) : {r.get('timings_s')}\n")
-        if r.get("transcript"):
-            md.append("### Transcription\n\n```\n" + r["transcript"]["text"][:6000] + "\n```\n")
-        if r.get("analysis"):
-            md.append("### Analyse\n\n```json\n" + json.dumps(r["analysis"], ensure_ascii=False, indent=1)[:6000] + "\n```\n")
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary:
-        with open(summary, "a", encoding="utf-8") as fh:
+        j = ch["job"]
+        md.append(f"- Source : {ch['candidat']}\n- Titre : {j.get('title')}\n- Durée : {j.get('duration_s')} s"
+                  f"\n- Statut : {j.get('status')} — message : {j.get('error')}\n- Langue détectée : {j.get('language')}"
+                  f"\n- Segments : {len(ch['transcript']['segments'])}\n- Temps (s) : {ch['timings_s']}\n")
+        md.append("### Transcription (Whisper small)\n\n```\n" + ch["transcript"]["text"][:8000] + "\n```\n")
+        if ch.get("analysis"):
+            md.append("### Analyse (Qwen 2.5 7B)\n\n```json\n" + json.dumps(ch["analysis"], ensure_ascii=False, indent=1)[:8000] + "\n```\n")
+    s = os.environ.get("GITHUB_STEP_SUMMARY")
+    if s:
+        with open(s, "a", encoding="utf-8") as fh:
             fh.write("\n".join(md))
 
 
