@@ -1,102 +1,103 @@
-Video Intelligence
-Video Intelligence is a project to transcribe, structure, and analyze video content from supported sources such as YouTube, TikTok, and Instagram.
-The goal is to turn a video link or an uploaded media file into reusable knowledge:
-a transcript;
-a concise summary;
-key ideas, arguments, and claims;
-notable figures, names, and timestamps when available;
-claims that should be independently verified;
-a critical analysis;
-searchable records that can later be compared across videos.
-Important limitation: access to third-party videos depends on each platform's APIs, authentication, availability, technical restrictions, and terms. The project must not promise universal downloading from public URLs. Manual media upload is the fallback when a link cannot be processed.
-Product scope
-Initial MVP
-Accept a supported video URL or an uploaded media file.
-Create an asynchronous processing job.
-Extract audio where permitted.
-Transcribe speech.
-Return the transcript and processing status.
-Analyze the transcript with an LLM.
-Store metadata and results for later retrieval.
-Planned capabilities
-Search across saved transcripts.
-Compare several videos on the same topic.
-Identify recurring arguments, contradictions, and source claims.
-Export transcripts and analysis.
-Optional OCR for relevant on-screen text.
-Multilingual transcription and analysis.
-Proposed architecture
-ChatGPT
-   |
-   | MCP tools
-   v
-MCP server / API
-   |
-   +---- FastAPI backend
-   |        |
-   |        +---- Video source adapters
-   |        +---- Upload handling
-   |        +---- Job management
-   |        +---- Transcript and analysis API
-   |
-   +---- Worker queue
-   |        |
-   |        +---- Audio extraction
-   |        +---- faster-whisper transcription
-   |        +---- Optional OCR
-   |
-   +---- Data layer
-            |
-            +---- PostgreSQL (production)
-            +---- Object storage (temporary media)
-Proposed technology stack
-Layer
-Initial choice
-API
-Python + FastAPI
-ChatGPT integration
-MCP server using the official MCP SDK
-Speech-to-text
-faster-whisper
-Background processing
-Worker queue (to be selected)
-Local development database
-SQLite
-Production database
-PostgreSQL
-Media storage
-S3-compatible object storage
-OCR (optional)
-PaddleOCR
-Deployment
-Cloud hosting
-These are proposed choices, not yet implemented components.
-Planned MCP operations
-transcribe_video — submit a URL or uploaded media reference.
-get_job_status — retrieve processing status.
-get_transcript — retrieve transcript segments.
-analyze_video — generate structured analysis.
-compare_videos — compare saved videos.
-search_library — search the transcript library.
-export_transcript — export transcript and analysis.
-Data and privacy principles
-Process only content the user is authorized to access.
-Respect platform terms, copyright, access controls, and applicable law.
-Avoid retaining original media longer than necessary unless the user explicitly requests storage.
-Keep API keys and secrets in environment variables or a secrets manager.
-Do not commit credentials, private media, or personal data to Git.
-Repository status
-Status: project definition / initial scaffold.
-The architecture and feature list above describe the intended direction. They do not imply that the backend, workers, MCP server, database, platform adapters, authentication, or cloud deployment have already been implemented.
-Next implementation milestones
-Create the FastAPI application and health endpoint.
-Define the job and transcript data models.
-Implement file-upload processing for a small set of supported formats.
-Integrate transcription with faster-whisper.
-Add asynchronous job handling.
-Add transcript analysis and structured output.
-Expose the core operations through MCP.
-Add source adapters only where access is permitted and technically supported.
-Add persistence, authentication, tests, and cloud deployment.
-Development
-The exact setup instructions will be added once the initial application scaffold and dependency versions are committed.# Video-intelligence
+# Video Intelligence
+
+Transforme une vidéo (lien TikTok ou YouTube, ou fichier importé) en connaissances structurées : transcription horodatée, résumé, idées clés, **faits vs opinions**, affirmations à vérifier, analyse critique, bibliothèque consultable, comparaison de vidéos et export Markdown.
+
+Statut : **v0.2 — MVP fonctionnel** (local, mono-utilisateur).
+
+## Architecture
+
+```
+Navigateur (interface web, port 8000)
+   │
+   ▼
+app/  ── API FastAPI ──────────────────────────────┐
+   │   jobs, bibliothèque, recherche, export        │
+   │                                                │
+   ├─► fetcher/ (service séparé, port 8001)         │  scraping isolé :
+   │      yt-dlp → fichier audio + métadonnées      │  remplaçable sans toucher à l'analyse
+   │                                                │
+   ├─► ffmpeg → audio 16 kHz                        │
+   ├─► faster-whisper (local) → transcription       │
+   ├─► LLM local via API compatible OpenAI          │  Ollama par défaut
+   └─► SQLite + index plein texte (FTS5)            │
+```
+
+| Élément | Choix |
+|---|---|
+| API | Python + FastAPI |
+| Récupération des vidéos | Service `fetcher/` séparé, yt-dlp |
+| Transcription | faster-whisper (CPU, local) |
+| Analyse | Tout LLM compatible OpenAI (Ollama, LM Studio, vLLM… ou API cloud) |
+| Stockage | SQLite + FTS5 (recherche insensible aux accents) |
+| Interface | Page web unique, `app/static/index.html` |
+
+Plateformes : **TikTok** et **YouTube** activées. Instagram, Facebook et X sont détectées mais refusées proprement : utiliser l'import de fichier.
+
+## Démarrage (Codespace)
+
+Le dossier `.devcontainer/` installe automatiquement Python, ffmpeg et les dépendances.
+
+1. Créer un nouveau Codespace sur la branche, machine **4 cœurs / 16 Go** recommandée.
+2. Installer le LLM local (une seule fois, ~5 Go) :
+   ```bash
+   bash scripts/setup_ollama.sh         # modèle par défaut : qwen2.5:7b-instruct
+   ```
+3. Lancer l'application :
+   ```bash
+   bash scripts/start.sh
+   ```
+4. Ouvrir le port 8000 (onglet « Ports ») → interface web. Documentation de l'API : `/docs`.
+
+Au premier traitement, le modèle Whisper est téléchargé depuis huggingface.co (~500 Mo pour `small`).
+
+## Configuration
+
+Copier `.env.example` en `.env`. Principaux réglages :
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `WHISPER_MODEL` | `tiny`, `base`, `small`, `medium`, `large-v3` (précision ↑, vitesse ↓) | `small` |
+| `WHISPER_LANGUAGE` | Forcer la langue (`fr`, `ar`, `en`…) ; vide = détection | vide |
+| `LLM_BASE_URL` / `LLM_MODEL` | Serveur et modèle d'analyse | Ollama / `qwen2.5:7b-instruct` |
+| `LLM_MAX_TRANSCRIPT_CHARS` | Au-delà, la transcription est tronquée pour l'analyse (signalé dans le résultat) | 24 000 |
+| `KEEP_MEDIA` | Conserver les fichiers audio/vidéo après traitement | `false` |
+| `FETCHER_COOKIES_FILE` | Fichier cookies (format Netscape) si une plateforme exige une connexion | vide |
+
+## API
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| POST | `/v1/jobs` | Soumettre un lien `{"url": "..."}` |
+| POST | `/v1/jobs/upload` | Importer un fichier audio/vidéo |
+| GET | `/v1/jobs`, `/v1/jobs/{id}` | Bibliothèque, statut |
+| GET | `/v1/jobs/{id}/transcript` | Transcription horodatée |
+| GET | `/v1/jobs/{id}/analysis` | Analyse structurée |
+| POST | `/v1/jobs/{id}/analyze` | Relancer l'analyse (ex. après changement de modèle) |
+| GET | `/v1/jobs/{id}/export` | Export Markdown |
+| DELETE | `/v1/jobs/{id}` | Supprimer |
+| GET | `/v1/search?q=` | Recherche plein texte dans les transcriptions |
+| POST | `/v1/compare` | Comparer 2 à 5 vidéos analysées |
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Les tests simulent Whisper, le LLM et le fetcher : ils tournent sans réseau ni GPU.
+
+## Limites connues
+
+- **Récupération des vidéos** : dépend de yt-dlp et des protections des plateformes. TikTok change souvent ; mettre à jour avec `pip install -U yt-dlp` en cas d'échec. Repli : import manuel du fichier.
+- **Droits** : ne traiter que des contenus auxquels on a légitimement accès ; respecter les conditions des plateformes et le droit d'auteur.
+- **Qualité de l'analyse** : dépend du modèle local. Un 7B reste moyen sur l'analyse critique ; vérifier les résultats.
+- **Vision** : seule la parole est analysée (pas l'image ni le texte à l'écran).
+- **Mono-utilisateur** : pas d'authentification. Ne pas exposer publiquement le port 8000.
+
+## Prochaines étapes
+
+1. Serveur MCP (intégration ChatGPT / Claude) au-dessus de l'API existante.
+2. Instagram via le fetcher (cookies requis).
+3. OCR du texte à l'écran (optionnel).
+4. Authentification + PostgreSQL pour un déploiement multi-utilisateur.
